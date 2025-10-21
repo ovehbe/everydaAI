@@ -6,6 +6,6 @@
     <string name="notification_channel_description">Background service notifications</string>
     <string name="foreground_notification_title">everydAI is running</string>
     <string name="foreground_notification_text">Managing your communications</string>
-    <string name="server_url">https://your-server-domain.com</string>
-    <string name="websocket_url">wss://your-server-domain.com/ws</string>
+    <string name="server_url">http://35.246.245.143:3000</string>
+    <string name="websocket_url">ws://35.246.245.143:3000/ws</string>
 </resources>
