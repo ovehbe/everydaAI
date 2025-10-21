@@ -11,7 +11,7 @@ const { v4: uuidv4 } = require('uuid');
 const logger = require('./utils/logger');
 const authMiddleware = require('./middleware/auth');
 const whatsappClient = require('./services/whatsapp');
-const twilioService = require('./services/twilio');
+const callService = require('./services/twilio'); // Now a CallService
 const aiService = require('./services/ai');
 const { handleNotification, handleSMS, handleCall } = require('./handlers');
 const deviceManager = require('./services/deviceManager');
@@ -74,6 +74,22 @@ wss.on('connection', async (ws, req) => {
                     break;
                 case 'call':
                     await handleCall(data, device);
+                    break;
+                case 'call_audio':
+                    // Process call audio stream
+                    await callService.processCallAudio(data.callId, data.audio);
+                    break;
+                case 'call_register':
+                    // Register new call
+                    callService.registerCall(data.callId, data.phoneNumber, connectionId, data.isIncoming);
+                    break;
+                case 'call_status':
+                    // Update call status
+                    callService.updateCallStatus(data.callId, data.status);
+                    break;
+                case 'call_observe':
+                    // Client wants to observe a call
+                    callService.addCallObserver(data.callId, connectionId);
                     break;
                 case 'command':
                     // Handle commands from the client

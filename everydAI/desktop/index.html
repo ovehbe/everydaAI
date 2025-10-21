@@ -123,11 +123,54 @@
                             <option value="all">All</option>
                             <option value="incoming">Incoming</option>
                             <option value="outgoing">Outgoing</option>
-                            <option value="missed">Missed</option>
+                            <option value="active">Active</option>
+                            <option value="ended">Ended</option>
                         </select>
                     </div>
                     <div id="calls-list" class="list">
                         <!-- Call items will be added here -->
+                    </div>
+                </div>
+                
+                <!-- Active Call View (pops up during live calls) -->
+                <div id="active-call-view" class="modal hidden">
+                    <div class="modal-content">
+                        <div class="modal-header">
+                            <h2 id="active-call-title">Call with <span id="active-call-number"></span></h2>
+                            <span class="close-button" id="close-call-view">&times;</span>
+                        </div>
+                        <div class="modal-body">
+                            <div class="call-status-container">
+                                <div class="call-status" id="active-call-status">Status: Ringing</div>
+                                <div class="call-timer" id="active-call-timer">00:00</div>
+                            </div>
+                            
+                            <div class="call-transcript-container">
+                                <h3>Transcript</h3>
+                                <div id="call-transcript" class="transcript-box"></div>
+                            </div>
+                            
+                            <div class="call-controls">
+                                <h3>AI Assistant Controls</h3>
+                                <div class="control-group">
+                                    <input type="text" id="ai-message-input" placeholder="Type message for AI to say...">
+                                    <button id="ai-speak-btn" class="btn primary">Speak</button>
+                                </div>
+                                <div class="button-group">
+                                    <button id="answer-call-btn" class="btn primary">Answer</button>
+                                    <button id="end-call-btn" class="btn secondary">End Call</button>
+                                </div>
+                            </div>
+                            
+                            <div class="ai-suggestions">
+                                <h3>AI Suggestions</h3>
+                                <div id="ai-suggestions-list" class="suggestions-list">
+                                    <div class="suggestion">Answer with "Hello, I'm busy right now"</div>
+                                    <div class="suggestion">Ask caller to call back later</div>
+                                    <div class="suggestion">Take a message</div>
+                                </div>
+                            </div>
+                        </div>
                     </div>
                 </div>
 

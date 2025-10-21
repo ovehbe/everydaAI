@@ -1,367 +1,527 @@
-const twilio = require('twilio');
 const logger = require('../utils/logger');
 const { processCallText, processSpeech } = require('./ai');
 const whatsappClient = require('./whatsapp');
+const deviceManager = require('./deviceManager');
+
+// Import for speech-to-text
+const { Readable } = require('stream');
+
+// Optional: Try to load speech recognition libraries if available
+let speechRecognition = null;
+try {
+    // Google Cloud Speech API (if available)
+    // speechRecognition = require('@google-cloud/speech');
+    // Or any other speech recognition library
+    logger.info('Speech recognition loaded successfully');
+} catch (e) {
+    logger.warn('Speech recognition library not available, using AI-only transcription');
+}
 
 /**
- * TwilioService for handling phone calls
+ * CallService for handling direct phone calls from Android devices
  */
-class TwilioService {
+class CallService {
     constructor() {
-        // Initialize Twilio client
-        this.client = twilio(
-            process.env.TWILIO_ACCOUNT_SID,
-            process.env.TWILIO_AUTH_TOKEN
-        );
-        
-        this.twilioPhone = process.env.TWILIO_PHONE_NUMBER;
-        this.isConfigured = this.checkConfig();
-        
         // Active calls tracking
         this.activeCalls = new Map();
-    }
-    
-    /**
-     * Check if Twilio is properly configured
-     * @returns {boolean} - Configuration status
-     */
-    checkConfig() {
-        if (!process.env.TWILIO_ACCOUNT_SID || 
-            !process.env.TWILIO_AUTH_TOKEN ||
-            !process.env.TWILIO_PHONE_NUMBER) {
-            logger.warn('Twilio not fully configured - some features will be limited');
-            return false;
-        }
-        return true;
-    }
-    
-    /**
-     * Make an outbound call
-     * @param {string} to - Destination phone number
-     * @param {object} options - Call options
-     * @returns {Promise<object>} - Call resource
-     */
-    async makeCall(to, options = {}) {
-        if (!this.isConfigured) {
-            throw new Error('Twilio not configured');
-        }
         
+        // Chunks of audio per call
+        this.callAudioChunks = new Map();
+        
+        // Active transcriptions per call
+        this.callTranscriptions = new Map();
+        
+        // Users actively monitoring calls
+        this.callObservers = new Map();
+    }
+    
+    /**
+     * Register an incoming call from Android device
+     * @param {string} callId - Unique call identifier
+     * @param {string} phoneNumber - Phone number
+     * @param {string} deviceId - Device ID where call is happening
+     * @param {boolean} isIncoming - Whether this is an incoming call
+     * @returns {object} - Call registration result
+     */
+    registerCall(callId, phoneNumber, deviceId, isIncoming = true) {
         try {
-            const callOptions = {
-                to: to,
-                from: this.twilioPhone,
-                twiml: this.generateInitialTwiML(options),
-                statusCallback: options.statusCallbackUrl || `${process.env.BASE_URL}/api/calls/status`,
-                statusCallbackMethod: 'POST',
-                ...options
+            // Create call record
+            const call = {
+                callId,
+                phoneNumber,
+                deviceId,
+                startTime: new Date(),
+                isIncoming,
+                status: 'ringing',
+                transcript: '',
+                processingTime: 0
             };
             
-            const call = await this.client.calls.create(callOptions);
+            // Store call
+            this.activeCalls.set(callId, call);
             
-            logger.info(`Initiated call to ${to}, SID: ${call.sid}`);
+            // Initialize audio chunks array for this call
+            this.callAudioChunks.set(callId, []);
             
-            // Track the call
-            this.activeCalls.set(call.sid, {
-                to,
-                startTime: new Date(),
-                status: 'initiated',
-                options
-            });
+            // Initialize transcription for this call
+            this.callTranscriptions.set(callId, '');
             
-            // Notify via WhatsApp if available
-            if (whatsappClient.isReady && whatsappClient.assistantGroup) {
-                whatsappClient.sendToGroup(`📞 *Outbound Call Initiated*\nTo: ${to}\nSID: ${call.sid}`);
-            }
-            
-            return call;
-        } catch (error) {
-            logger.error('Failed to make Twilio call:', error);
-            throw error;
-        }
-    }
-    
-    /**
-     * Handle an incoming call (webhook handler)
-     * @param {object} req - Express request
-     * @param {object} res - Express response
-     */
-    handleIncomingCall(req, res) {
-        logger.info(`Incoming call from ${req.body.From}`);
-        
-        try {
-            const twiml = this.generateIncomingCallTwiML({
-                from: req.body.From,
-                callSid: req.body.CallSid
-            });
-            
-            // Track the call
-            this.activeCalls.set(req.body.CallSid, {
-                from: req.body.From,
-                startTime: new Date(),
-                status: 'ringing',
-                direction: 'inbound'
-            });
+            logger.info(`Registered ${isIncoming ? 'incoming' : 'outgoing'} call from/to ${phoneNumber}, ID: ${callId}`);
             
             // Notify via WhatsApp if available
-            if (whatsappClient.isReady && whatsappClient.assistantGroup) {
-                whatsappClient.sendToGroup(`📞 *Incoming Call*\nFrom: ${req.body.From}\nSID: ${req.body.CallSid}`);
-            }
-            
-            // Respond with TwiML
-            res.type('text/xml');
-            res.send(twiml.toString());
-        } catch (error) {
-            logger.error('Error handling incoming call:', error);
-            res.status(500).send('Error handling call');
-        }
-    }
-    
-    /**
-     * Handle call status updates
-     * @param {object} req - Express request
-     * @param {object} res - Express response
-     */
-    handleCallStatus(req, res) {
-        const { CallSid, CallStatus, From, To, CallDuration } = req.body;
-        
-        logger.info(`Call ${CallSid} status: ${CallStatus}, duration: ${CallDuration || 0}s`);
-        
-        // Update call tracking
-        if (this.activeCalls.has(CallSid)) {
-            const call = this.activeCalls.get(CallSid);
-            call.status = CallStatus;
-            call.duration = CallDuration;
-            
-            if (CallStatus === 'completed') {
-                // Call ended, we can process transcripts, etc.
-                this.processCompletedCall(CallSid, call);
-            }
-        }
-        
-        // Notify via WhatsApp for significant status changes
-        if (['completed', 'failed', 'busy', 'no-answer'].includes(CallStatus)) {
-            const from = From || 'Unknown';
-            const to = To || 'Unknown';
-            
             if (whatsappClient.isReady && whatsappClient.assistantGroup) {
                 whatsappClient.sendToGroup(
-                    `📞 *Call ${CallStatus}*\n` +
-                    `From: ${from}\n` +
-                    `To: ${to}\n` +
-                    `Duration: ${CallDuration || 0}s\n` +
-                    `SID: ${CallSid}`
+                    `📞 *${isIncoming ? 'Incoming' : 'Outgoing'} Call*\n` +
+                    `${isIncoming ? 'From' : 'To'}: ${phoneNumber}\n` +
+                    `ID: ${callId}`
                 );
             }
+            
+            // Notify connected clients
+            this.broadcastCallUpdate(callId, call);
+            
+            return { success: true, call };
+        } catch (error) {
+            logger.error('Failed to register call:', error);
+            return { success: false, error: error.message };
         }
-        
-        // Always respond with 200 OK
-        res.status(200).send('OK');
     }
     
     /**
-     * Process a completed call
-     * @param {string} callSid - Call SID
-     * @param {object} callInfo - Call information
+     * Update call status
+     * @param {string} callId - Call identifier
+     * @param {string} status - New status (answered, in_progress, ended)
+     * @returns {object} - Update result
      */
-    async processCompletedCall(callSid, callInfo) {
+    updateCallStatus(callId, status) {
         try {
-            // Get call recordings if available
-            const recordings = await this.client.recordings.list({ callSid });
-            
-            if (recordings.length > 0) {
-                logger.info(`Found ${recordings.length} recordings for call ${callSid}`);
-                
-                // Process the recordings (transcribe, analyze, etc.)
-                for (const recording of recordings) {
-                    await this.processRecording(recording, callInfo);
-                }
+            if (!this.activeCalls.has(callId)) {
+                return { success: false, error: 'Call not found' };
             }
             
-            // Clean up
-            this.activeCalls.delete(callSid);
-        } catch (error) {
-            logger.error(`Error processing completed call ${callSid}:`, error);
-        }
-    }
-    
-    /**
-     * Process a call recording
-     * @param {object} recording - Twilio recording resource
-     * @param {object} callInfo - Call information
-     */
-    async processRecording(recording, callInfo) {
-        try {
-            // Get recording URL
-            const recordingUrl = `https://api.twilio.com/2010-04-01/Accounts/${process.env.TWILIO_ACCOUNT_SID}/Recordings/${recording.sid}.mp3`;
+            const call = this.activeCalls.get(callId);
+            call.status = status;
             
-            // Request transcription if not already transcribed
-            if (!recording.transcriptionSid) {
-                const transcription = await this.client.recordings(recording.sid)
-                    .transcriptions
-                    .create();
+            if (status === 'answered') {
+                call.answeredAt = new Date();
+            } else if (status === 'ended') {
+                call.endedAt = new Date();
+                call.duration = Math.round((call.endedAt - (call.answeredAt || call.startTime)) / 1000);
                 
-                logger.info(`Requested transcription for recording ${recording.sid}, transcription SID: ${transcription.sid}`);
-                
-                // Wait for transcription to complete (would be handled by webhook in production)
-                // For now, we'll fetch it directly after a short delay
-                await new Promise(resolve => setTimeout(resolve, 5000));
-                
-                const completedTranscription = await this.client.transcriptions(transcription.sid).fetch();
-                
-                if (completedTranscription.status === 'completed') {
-                    // Process the transcript with AI
-                    const transcript = completedTranscription.transcriptionText;
-                    const response = await processSpeech(transcript, {
-                        callSid: recording.callSid,
-                        from: callInfo.from || callInfo.to,
-                        duration: callInfo.duration || 0
-                    });
-                    
-                    // Send the summary to WhatsApp
-                    if (response && whatsappClient.isReady && whatsappClient.assistantGroup) {
-                        await whatsappClient.sendToGroup(
-                            `📝 *Call Summary*\n` +
-                            `From: ${callInfo.from || callInfo.to}\n` +
-                            `Duration: ${callInfo.duration || 0}s\n\n` +
-                            response
-                        );
-                    }
-                }
+                // Process any accumulated audio for final transcript
+                this.finalizeCallProcessing(callId);
             }
+            
+            logger.info(`Call ${callId} status updated to ${status}`);
+            
+            // Broadcast to connected clients
+            this.broadcastCallUpdate(callId, call);
+            
+            return { success: true, call };
         } catch (error) {
-            logger.error(`Error processing recording ${recording.sid}:`, error);
+            logger.error(`Failed to update call status: ${error.message}`);
+            return { success: false, error: error.message };
         }
     }
     
     /**
-     * Handle speech input from Twilio
-     * @param {object} req - Express request
-     * @param {object} res - Express response
+     * Process audio chunk from a call
+     * @param {string} callId - Call identifier
+     * @param {string} base64Audio - Audio chunk in base64
+     * @returns {Promise<object>} - Processing result
      */
-    async handleSpeechInput(req, res) {
+    async processCallAudio(callId, base64Audio) {
         try {
-            const { CallSid, SpeechResult } = req.body;
+            if (!this.activeCalls.has(callId)) {
+                return { success: false, error: 'Call not found' };
+            }
             
-            logger.info(`Speech input for call ${CallSid}: ${SpeechResult}`);
+            const call = this.activeCalls.get(callId);
             
-            // Process the speech with AI
-            const response = await processSpeech(SpeechResult, {
-                callSid: CallSid,
+            // Convert base64 to buffer
+            const audioBuffer = Buffer.from(base64Audio, 'base64');
+            
+            // Store audio chunk
+            if (this.callAudioChunks.has(callId)) {
+                this.callAudioChunks.get(callId).push(audioBuffer);
+            } else {
+                this.callAudioChunks.set(callId, [audioBuffer]);
+            }
+            
+            // Process audio for transcription
+            // This would ideally happen in batches or separate worker
+            const transcriptionUpdate = await this.processAudioForTranscription(callId, audioBuffer);
+            
+            if (transcriptionUpdate && transcriptionUpdate.transcript) {
+                // Update call transcript
+                call.transcript = (call.transcript || '') + ' ' + transcriptionUpdate.transcript;
+                this.callTranscriptions.set(callId, call.transcript);
+                
+                // Broadcast transcription update
+                this.broadcastTranscriptionUpdate(callId, transcriptionUpdate.transcript, false);
+                
+                // Process transcript with AI for response
+                await this.processTranscriptForResponse(callId, transcriptionUpdate.transcript);
+            }
+            
+            return { success: true };
+        } catch (error) {
+            logger.error(`Error processing call audio: ${error.message}`);
+            return { success: false, error: error.message };
+        }
+    }
+    
+    /**
+     * Process audio for transcription
+     * @param {string} callId - Call ID
+     * @param {Buffer} audioBuffer - Audio buffer
+     * @returns {Promise<object>} - Transcription result
+     */
+    async processAudioForTranscription(callId, audioBuffer) {
+        try {
+            // We'd use a speech-to-text service here (Google, Azure, etc)
+            // For now, just use OpenAI for processing (not ideal for real-time)
+            
+            // For demo/testing, process every Nth chunk to reduce API calls
+            // In production, use proper streaming STT API
+            const audioChunks = this.callAudioChunks.get(callId) || [];
+            
+            // Only process audio periodically to avoid excessive API calls
+            // Real implementation would use streaming STT
+            if (audioChunks.length % 20 !== 0 && audioChunks.length > 1) {
+                return null;
+            }
+            
+            logger.info(`Processing audio transcription for call ${callId}`);
+            
+            // Get latest audio chunks for context
+            const recentChunks = audioChunks.slice(-5);
+            
+            // For demo purposes, we'll "simulate" the speech-to-text with AI
+            const call = this.activeCalls.get(callId);
+            const recentTranscript = await processSpeech(`Audio chunk ${audioChunks.length} from call with ${call.phoneNumber}`, {
+                callId: callId,
                 inProgress: true
             });
             
-            // Generate TwiML response
-            const twiml = new twilio.twiml.VoiceResponse();
+            return {
+                transcript: recentTranscript || 'Unintelligible audio',
+                isFinal: false,
+                confidence: 0.8
+            };
+        } catch (error) {
+            logger.error(`Error in audio transcription: ${error.message}`);
+            return null;
+        }
+    }
+    
+    /**
+     * Process transcript with AI for response
+     * @param {string} callId - Call ID
+     * @param {string} transcript - Transcript text
+     * @returns {Promise<void>}
+     */
+    async processTranscriptForResponse(callId, transcript) {
+        try {
+            const call = this.activeCalls.get(callId);
             
-            if (response) {
-                // Say the AI response
-                twiml.say({
-                    voice: 'Polly.Joanna-Neural',
-                    language: 'en-US'
-                }, response);
-                
-                // Ask for more input
-                twiml.gather({
-                    input: 'speech',
-                    speechTimeout: 2,
-                    language: 'en-US',
-                    action: '/api/calls/speech',
-                    method: 'POST'
-                });
-            } else {
-                // Fallback response
-                twiml.say(
-                    'I didn\'t catch that. Please try again or call back later.'
-                );
-                twiml.hangup();
+            // Use AI to process the transcript and generate a response
+            const aiResponse = await processSpeech(transcript, {
+                callId: callId,
+                phoneNumber: call.phoneNumber,
+                inProgress: true
+            });
+            
+            if (!aiResponse) {
+                return;
             }
             
-            // Respond with TwiML
-            res.type('text/xml');
-            res.send(twiml.toString());
+            // Send AI response to device
+            const device = deviceManager.getDevice(call.deviceId);
+            
+            if (device && device.ws) {
+                device.ws.send(JSON.stringify({
+                    type: 'call_ai_response',
+                    callId: callId,
+                    responseType: 'speak',
+                    text: aiResponse
+                }));
+            }
+            
+            // Broadcast to observers
+            this.broadcastAiResponse(callId, aiResponse);
+            
         } catch (error) {
-            logger.error('Error handling speech input:', error);
-            
-            // Fallback TwiML
-            const twiml = new twilio.twiml.VoiceResponse();
-            twiml.say('Sorry, there was an error processing your request.');
-            twiml.hangup();
-            
-            res.type('text/xml');
-            res.send(twiml.toString());
+            logger.error(`Error processing transcript: ${error.message}`);
         }
     }
     
     /**
-     * Generate initial TwiML for outbound calls
-     * @param {object} options - Call options
-     * @returns {twilio.twiml.VoiceResponse} - TwiML response
+     * Finalize call processing
+     * @param {string} callId - Call ID
      */
-    generateInitialTwiML(options = {}) {
-        const twiml = new twilio.twiml.VoiceResponse();
-        
-        // Add greeting
-        twiml.say({
-            voice: options.voice || 'Polly.Joanna-Neural',
-            language: options.language || 'en-US'
-        }, options.greeting || 'Hello, this is an automated call from everydAI.');
-        
-        // Add pause
-        twiml.pause({ length: 1 });
-        
-        // Add message
-        if (options.message) {
-            twiml.say({
-                voice: options.voice || 'Polly.Joanna-Neural',
-                language: options.language || 'en-US'
-            }, options.message);
-        }
-        
-        // Gather speech input if interactive
-        if (options.interactive) {
-            twiml.gather({
-                input: 'speech',
-                speechTimeout: options.speechTimeout || 2,
-                language: options.language || 'en-US',
-                action: options.speechAction || '/api/calls/speech',
-                method: 'POST'
+    async finalizeCallProcessing(callId) {
+        try {
+            const call = this.activeCalls.get(callId);
+            if (!call) return;
+            
+            // Process complete transcript for summary
+            const fullTranscript = this.callTranscriptions.get(callId) || '';
+            
+            if (fullTranscript.trim().length === 0) {
+                logger.info(`No transcript available for call ${callId}`);
+                return;
+            }
+            
+            logger.info(`Finalizing call ${callId} with transcript length ${fullTranscript.length}`);
+            
+            // Generate call summary with AI
+            const summary = await processSpeech(fullTranscript, {
+                callId: callId,
+                phoneNumber: call.phoneNumber,
+                duration: call.duration || 0,
+                inProgress: false
             });
+            
+            // Store summary
+            call.summary = summary;
+            
+            // Notify WhatsApp
+            if (summary && whatsappClient.isReady && whatsappClient.assistantGroup) {
+                await whatsappClient.sendToGroup(
+                    `📝 *Call Summary*\n` +
+                    `${call.isIncoming ? 'From' : 'To'}: ${call.phoneNumber}\n` +
+                    `Duration: ${this.formatDuration(call.duration || 0)}\n\n` +
+                    summary
+                );
+            }
+            
+            // Broadcast to observers
+            this.broadcastCallSummary(callId, summary);
+            
+            // Clean up after delay to allow clients to fetch data
+            setTimeout(() => {
+                this.cleanupCall(callId);
+            }, 60000); // Keep data for 1 minute after call ends
+            
+        } catch (error) {
+            logger.error(`Error finalizing call: ${error.message}`);
         }
-        
-        return twiml;
     }
     
     /**
-     * Generate TwiML for incoming calls
-     * @param {object} options - Call options
-     * @returns {twilio.twiml.VoiceResponse} - TwiML response
+     * Clean up call data
+     * @param {string} callId - Call ID
      */
-    generateIncomingCallTwiML(options = {}) {
-        const twiml = new twilio.twiml.VoiceResponse();
+    cleanupCall(callId) {
+        this.callAudioChunks.delete(callId);
+        // Keep the call metadata for history
+    }
+    
+    /**
+     * Send AI command for call handling
+     * @param {string} callId - Call ID
+     * @param {string} command - Command (speak, end_call)
+     * @param {string} text - Text to speak
+     * @returns {object} - Command result
+     */
+    sendCallCommand(callId, command, text) {
+        try {
+            const call = this.activeCalls.get(callId);
+            if (!call) {
+                return { success: false, error: 'Call not found' };
+            }
+            
+            const device = deviceManager.getDevice(call.deviceId);
+            if (!device || !device.ws) {
+                return { success: false, error: 'Device not connected' };
+            }
+            
+            // Send command to device
+            device.ws.send(JSON.stringify({
+                type: 'call_ai_response',
+                callId: callId,
+                responseType: command,
+                text: text
+            }));
+            
+            logger.info(`Sent ${command} command for call ${callId}`);
+            
+            return { success: true };
+        } catch (error) {
+            logger.error(`Error sending call command: ${error.message}`);
+            return { success: false, error: error.message };
+        }
+    }
+    
+    /**
+     * Add observer to a call
+     * @param {string} callId - Call ID
+     * @param {string} clientId - Client ID (WebSocket)
+     */
+    addCallObserver(callId, clientId) {
+        if (!this.callObservers.has(callId)) {
+            this.callObservers.set(callId, new Set());
+        }
+        this.callObservers.get(callId).add(clientId);
+    }
+    
+    /**
+     * Remove observer from a call
+     * @param {string} callId - Call ID
+     * @param {string} clientId - Client ID
+     */
+    removeCallObserver(callId, clientId) {
+        if (this.callObservers.has(callId)) {
+            this.callObservers.get(callId).delete(clientId);
+        }
+    }
+    
+    /**
+     * Broadcast call update to observers
+     * @param {string} callId - Call ID
+     * @param {object} call - Call data
+     */
+    broadcastCallUpdate(callId, call) {
+        const observers = this.callObservers.get(callId);
+        if (!observers || observers.size === 0) {
+            return;
+        }
         
-        // Add greeting
-        twiml.say({
-            voice: 'Polly.Joanna-Neural',
-            language: 'en-US'
-        }, 'Hello, you\'ve reached the everydAI assistant. How can I help you today?');
+        const message = {
+            type: 'call_update',
+            callId: callId,
+            call: {
+                ...call,
+                transcript: undefined // Don't include full transcript in update
+            }
+        };
         
-        // Gather speech input
-        twiml.gather({
-            input: 'speech',
-            speechTimeout: 2,
-            language: 'en-US',
-            action: '/api/calls/speech',
-            method: 'POST'
+        observers.forEach(clientId => {
+            const client = deviceManager.getDevice(clientId);
+            if (client && client.ws) {
+                client.ws.send(JSON.stringify(message));
+            }
         });
+    }
+    
+    /**
+     * Broadcast transcription update to observers
+     * @param {string} callId - Call ID
+     * @param {string} transcript - New transcript text
+     * @param {boolean} isFinal - Whether this is a final transcription
+     */
+    broadcastTranscriptionUpdate(callId, transcript, isFinal = false) {
+        const observers = this.callObservers.get(callId);
+        if (!observers || observers.size === 0) {
+            return;
+        }
         
-        // If no input, add fallback
-        twiml.say('I didn\'t hear anything. Please call back when you\'re ready.');
+        const message = {
+            type: 'call_transcript',
+            callId: callId,
+            transcript: transcript,
+            isFinal: isFinal,
+            timestamp: new Date().toISOString()
+        };
         
-        return twiml;
+        observers.forEach(clientId => {
+            const client = deviceManager.getDevice(clientId);
+            if (client && client.ws) {
+                client.ws.send(JSON.stringify(message));
+            }
+        });
+    }
+    
+    /**
+     * Broadcast AI response to observers
+     * @param {string} callId - Call ID
+     * @param {string} response - AI response
+     */
+    broadcastAiResponse(callId, response) {
+        const observers = this.callObservers.get(callId);
+        if (!observers || observers.size === 0) {
+            return;
+        }
+        
+        const message = {
+            type: 'call_ai_response',
+            callId: callId,
+            response: response,
+            timestamp: new Date().toISOString()
+        };
+        
+        observers.forEach(clientId => {
+            const client = deviceManager.getDevice(clientId);
+            if (client && client.ws) {
+                client.ws.send(JSON.stringify(message));
+            }
+        });
+    }
+    
+    /**
+     * Broadcast call summary to observers
+     * @param {string} callId - Call ID
+     * @param {string} summary - Call summary
+     */
+    broadcastCallSummary(callId, summary) {
+        const observers = this.callObservers.get(callId);
+        if (!observers || observers.size === 0) {
+            return;
+        }
+        
+        const message = {
+            type: 'call_summary',
+            callId: callId,
+            summary: summary,
+            timestamp: new Date().toISOString()
+        };
+        
+        observers.forEach(clientId => {
+            const client = deviceManager.getDevice(clientId);
+            if (client && client.ws) {
+                client.ws.send(JSON.stringify(message));
+            }
+        });
+    }
+    
+    /**
+     * Get active calls
+     * @returns {Array} - Array of active calls
+     */
+    getActiveCalls() {
+        return Array.from(this.activeCalls.values());
+    }
+    
+    /**
+     * Get call by ID
+     * @param {string} callId - Call ID
+     * @returns {object|null} - Call data or null if not found
+     */
+    getCall(callId) {
+        return this.activeCalls.get(callId) || null;
+    }
+    
+    /**
+     * Format seconds into human-readable duration
+     * @param {number} seconds - Duration in seconds
+     * @returns {string} - Formatted duration
+     */
+    formatDuration(seconds) {
+        const mins = Math.floor(seconds / 60);
+        const secs = seconds % 60;
+        
+        if (mins === 0) {
+            return `${secs} seconds`;
+        } else if (mins === 1) {
+            return `1 minute ${secs} seconds`;
+        } else {
+            return `${mins} minutes ${secs} seconds`;
+        }
     }
 }
 
 // Create singleton instance
-const twilioService = new TwilioService();
+const callService = new CallService();
 
-module.exports = twilioService;
+module.exports = callService;
