@@ -1,0 +1,166 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>everydAI Desktop</title>
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+    <div class="app">
+        <!-- Login Section -->
+        <div id="login-section" class="section">
+            <div class="container">
+                <div class="logo">
+                    <h1>everydAI</h1>
+                </div>
+                <div class="login-form">
+                    <h2>Login</h2>
+                    <div class="form-group">
+                        <label for="username">Username</label>
+                        <input type="text" id="username" placeholder="Enter username">
+                    </div>
+                    <div class="form-group">
+                        <label for="password">Password</label>
+                        <input type="password" id="password" placeholder="Enter password">
+                    </div>
+                    <div class="form-group">
+                        <button id="login-btn" class="btn primary">Login</button>
+                    </div>
+                    <div id="login-error" class="error-message"></div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Main App Section -->
+        <div id="main-section" class="section hidden">
+            <div class="sidebar">
+                <div class="logo">
+                    <h1>everydAI</h1>
+                </div>
+                <nav>
+                    <ul>
+                        <li><a href="#" class="nav-link active" data-target="dashboard">Dashboard</a></li>
+                        <li><a href="#" class="nav-link" data-target="notifications">Notifications</a></li>
+                        <li><a href="#" class="nav-link" data-target="messages">Messages</a></li>
+                        <li><a href="#" class="nav-link" data-target="calls">Calls</a></li>
+                        <li><a href="#" class="nav-link" data-target="settings">Settings</a></li>
+                    </ul>
+                </nav>
+                <div class="connection-status">
+                    <div id="status-indicator"></div>
+                    <span id="status-text">Disconnected</span>
+                </div>
+            </div>
+
+            <div class="content">
+                <!-- Dashboard View -->
+                <div id="dashboard-view" class="view">
+                    <h2>Dashboard</h2>
+                    <div class="dashboard-stats">
+                        <div class="stat-card">
+                            <h3>Notifications</h3>
+                            <p id="notification-count">0</p>
+                            <p>Today</p>
+                        </div>
+                        <div class="stat-card">
+                            <h3>Messages</h3>
+                            <p id="message-count">0</p>
+                            <p>Today</p>
+                        </div>
+                        <div class="stat-card">
+                            <h3>Calls</h3>
+                            <p id="call-count">0</p>
+                            <p>Today</p>
+                        </div>
+                    </div>
+                    <div class="recent-activity">
+                        <h3>Recent Activity</h3>
+                        <div id="activity-list" class="list">
+                            <!-- Activity items will be added here -->
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Notifications View -->
+                <div id="notifications-view" class="view hidden">
+                    <h2>Notifications</h2>
+                    <div class="filter-bar">
+                        <input type="text" id="notification-search" placeholder="Search notifications...">
+                        <select id="notification-filter">
+                            <option value="all">All</option>
+                            <option value="important">Important</option>
+                            <option value="filtered">Filtered</option>
+                        </select>
+                    </div>
+                    <div id="notifications-list" class="list">
+                        <!-- Notification items will be added here -->
+                    </div>
+                </div>
+
+                <!-- Messages View -->
+                <div id="messages-view" class="view hidden">
+                    <h2>Messages</h2>
+                    <div class="filter-bar">
+                        <input type="text" id="message-search" placeholder="Search messages...">
+                        <select id="message-filter">
+                            <option value="all">All</option>
+                            <option value="sms">SMS</option>
+                            <option value="whatsapp">WhatsApp</option>
+                        </select>
+                    </div>
+                    <div id="messages-list" class="list">
+                        <!-- Message items will be added here -->
+                    </div>
+                </div>
+
+                <!-- Calls View -->
+                <div id="calls-view" class="view hidden">
+                    <h2>Calls</h2>
+                    <div class="filter-bar">
+                        <input type="text" id="call-search" placeholder="Search calls...">
+                        <select id="call-filter">
+                            <option value="all">All</option>
+                            <option value="incoming">Incoming</option>
+                            <option value="outgoing">Outgoing</option>
+                            <option value="missed">Missed</option>
+                        </select>
+                    </div>
+                    <div id="calls-list" class="list">
+                        <!-- Call items will be added here -->
+                    </div>
+                </div>
+
+                <!-- Settings View -->
+                <div id="settings-view" class="view hidden">
+                    <h2>Settings</h2>
+                    <div class="settings-form">
+                        <div class="form-group">
+                            <label for="server-url">Server URL</label>
+                            <input type="text" id="server-url" placeholder="http://your-server.com">
+                        </div>
+                        <div class="form-group">
+                            <label for="ws-url">WebSocket URL</label>
+                            <input type="text" id="ws-url" placeholder="ws://your-server.com/ws">
+                        </div>
+                        <div class="form-group checkbox">
+                            <input type="checkbox" id="notifications-enabled">
+                            <label for="notifications-enabled">Enable Desktop Notifications</label>
+                        </div>
+                        <div class="form-group checkbox">
+                            <input type="checkbox" id="start-minimized">
+                            <label for="start-minimized">Start Minimized</label>
+                        </div>
+                        <div class="form-group">
+                            <button id="save-settings" class="btn primary">Save Settings</button>
+                            <button id="logout-btn" class="btn secondary">Logout</button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="renderer.js"></script>
+</body>
+</html>
